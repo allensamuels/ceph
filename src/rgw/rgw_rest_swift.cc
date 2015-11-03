@@ -33,6 +33,20 @@
 
 #define dout_subsys ceph_subsys_rgw
 
+struct swift_err : public rgw_err {
+  virtual bool set_rgw_err(int err_no) {
+    rgw_http_errors::const_iterator r;
+
+    r = rgw_http_swift_errors.find(err_no);
+    if (r != rgw_http_swift_errors.end()) {
+      http_ret = r->second.first;
+      s3_code = r->second.second;
+      return true;
+    }
+    return rgw_err::set_rgw_err(err_no);
+  }
+};
+
 int RGWListBuckets_ObjStore_SWIFT::get_params()
 {
   marker = s->info.args.get("marker");
@@ -139,10 +153,10 @@ static void dump_account_metadata(struct req_state * const s,
 void RGWListBuckets_ObjStore_SWIFT::send_response_begin(bool has_buckets)
 {
   if (op_ret) {
-    set_req_state_err(s, op_ret);
+    s->set_req_state_err(op_ret);
   } else if (!has_buckets && s->format == RGW_FORMAT_PLAIN) {
     op_ret = STATUS_NO_CONTENT;
-    set_req_state_err(s, op_ret);
+    s->set_req_state_err(op_ret);
   }
 
   if (!g_conf->rgw_swift_enforce_content_length) {
@@ -348,7 +362,7 @@ next:
     op_ret = 0;
   }
 
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this, NULL, content_len);
   if (op_ret < 0) {
@@ -465,7 +479,7 @@ void RGWStatAccount_ObjStore_SWIFT::send_response()
             static_cast<RGWAccessControlPolicy_SWIFTAcct&>(*s->user_acl));
   }
 
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
 
   end_header(s, NULL, NULL, 0,  true);
@@ -481,7 +495,7 @@ void RGWStatBucket_ObjStore_SWIFT::send_response()
                             s->bucket_info.website_conf);
   }
 
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
 
   end_header(s, this, NULL, 0, true);
@@ -637,7 +651,7 @@ void RGWCreateBucket_ObjStore_SWIFT::send_response()
     op_ret = STATUS_CREATED;
   else if (op_ret == -ERR_BUCKET_EXISTS)
     op_ret = STATUS_ACCEPTED;
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   /* Propose ending HTTP header with 0 Content-Length header. */
   end_header(s, NULL, NULL, 0);
@@ -650,7 +664,7 @@ void RGWDeleteBucket_ObjStore_SWIFT::send_response()
   if (!r)
     r = STATUS_NO_CONTENT;
 
-  set_req_state_err(s, r);
+  s->set_req_state_err(r);
   dump_errno(s);
   end_header(s, this, NULL, 0);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -812,7 +826,7 @@ void RGWPutObj_ObjStore_SWIFT::send_response()
   }
 
   dump_last_modified(s, mtime);
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -869,7 +883,7 @@ void RGWPutMetadataAccount_ObjStore_SWIFT::send_response()
   if (! op_ret) {
     op_ret = STATUS_NO_CONTENT;
   }
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -899,7 +913,7 @@ void RGWPutMetadataBucket_ObjStore_SWIFT::send_response()
   if (!op_ret && (op_ret != -EINVAL)) {
     op_ret = STATUS_NO_CONTENT;
   }
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -929,8 +943,8 @@ void RGWPutMetadataObject_ObjStore_SWIFT::send_response()
   if (! op_ret) {
     op_ret = STATUS_ACCEPTED;
   }
-  set_req_state_err(s, op_ret);
-  if (!s->err.is_err()) {
+  s->set_req_state_err(op_ret);
+  if (!s->is_err()) {
     dump_content_length(s, 0);
   }
   dump_errno(s);
@@ -941,7 +955,6 @@ void RGWPutMetadataObject_ObjStore_SWIFT::send_response()
 static void bulkdelete_respond(const unsigned num_deleted,
                                const unsigned int num_unfound,
                                const std::list<RGWBulkDelete::fail_desc_t>& failures,
-                               const int prot_flags,                  /* in  */
                                ceph::Formatter& formatter)            /* out */
 {
   formatter.open_object_section("delete");
@@ -957,8 +970,8 @@ static void bulkdelete_respond(const unsigned num_deleted,
       }
     }
 
-    rgw_err err;
-    set_req_state_err(err, reason, prot_flags);
+    swift_err err;
+    err.set_rgw_err(reason);
     dump_errno(err, resp_status);
   } else if (0 == num_deleted && 0 == num_unfound) {
     /* 400 Bad Request */
@@ -982,8 +995,8 @@ static void bulkdelete_respond(const unsigned num_deleted,
     ss_name << fail_desc.path;
     encode_json("Name", ss_name.str(), &formatter);
 
-    rgw_err err;
-    set_req_state_err(err, fail_desc.err, prot_flags);
+    swift_err err;
+    err.set_rgw_err(fail_desc.err);
     string status;
     dump_errno(err, status);
     encode_json("Status", status, &formatter);
@@ -1026,7 +1039,7 @@ void RGWDeleteObj_ObjStore_SWIFT::send_response()
     r = STATUS_NO_CONTENT;
   }
 
-  set_req_state_err(s, r);
+  s->set_req_state_err(r);
   dump_errno(s);
 
   if (multipart_delete) {
@@ -1037,10 +1050,9 @@ void RGWDeleteObj_ObjStore_SWIFT::send_response()
       bulkdelete_respond(deleter->get_num_deleted(),
                          deleter->get_num_unfound(),
                          deleter->get_failures(),
-                         s->prot_flags,
                          *s->formatter);
     } else if (-ENOENT == op_ret) {
-      bulkdelete_respond(0, 1, {}, s->prot_flags, *s->formatter);
+      bulkdelete_respond(0, 1, {}, *s->formatter);
     } else {
       RGWBulkDelete::acct_path_t path;
       path.bucket_name = s->bucket_name;
@@ -1050,7 +1062,7 @@ void RGWDeleteObj_ObjStore_SWIFT::send_response()
       fail_desc.err = op_ret;
       fail_desc.path = path;
 
-      bulkdelete_respond(0, 0, { fail_desc }, s->prot_flags, *s->formatter);
+      bulkdelete_respond(0, 0, { fail_desc }, *s->formatter);
     }
   } else {
     end_header(s, this);
@@ -1162,7 +1174,7 @@ void RGWCopyObj_ObjStore_SWIFT::send_partial_response(off_t ofs)
   if (! sent_header) {
     if (! op_ret)
       op_ret = STATUS_CREATED;
-    set_req_state_err(s, op_ret);
+    s->set_req_state_err(op_ret);
     dump_errno(s);
     end_header(s, this);
 
@@ -1199,7 +1211,7 @@ void RGWCopyObj_ObjStore_SWIFT::send_response()
     string content_type;
     if (! op_ret)
       op_ret = STATUS_CREATED;
-    set_req_state_err(s, op_ret);
+    s->set_req_state_err(op_ret);
     dump_errno(s);
     dump_etag(s, etag);
     dump_last_modified(s, mtime);
@@ -1247,14 +1259,14 @@ int RGWGetObj_ObjStore_SWIFT::send_response_data(bufferlist& bl,
   }
 
   if (custom_http_ret) {
-    set_req_state_err(s, 0);
+    s->set_req_state_err(0);
     dump_errno(s, custom_http_ret);
   } else {
-    set_req_state_err(s, (partial_content && !op_ret) ? STATUS_PARTIAL_CONTENT
+    s->set_req_state_err((partial_content && !op_ret) ? STATUS_PARTIAL_CONTENT
 		    : op_ret);
     dump_errno(s);
 
-    if (s->err.is_err()) {
+    if (s->is_err()) {
       end_header(s, NULL);
       return 0;
     }
@@ -1264,7 +1276,7 @@ int RGWGetObj_ObjStore_SWIFT::send_response_data(bufferlist& bl,
     dump_range(s, ofs, end, s->obj_size);
   }
 
-  if (s->err.is_err()) {
+  if (s->is_err()) {
     end_header(s, NULL);
     return 0;
   }
@@ -1317,7 +1329,7 @@ void RGWOptionsCORS_ObjStore_SWIFT::send_response()
   if (op_ret == -ENOENT)
     op_ret = -EACCES;
   if (op_ret < 0) {
-    set_req_state_err(s, op_ret);
+    s->set_req_state_err(op_ret);
     dump_errno(s);
     end_header(s, NULL);
     return;
@@ -1384,7 +1396,7 @@ int RGWBulkDelete_ObjStore_SWIFT::get_data(
 
 void RGWBulkDelete_ObjStore_SWIFT::send_response()
 {
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this /* RGWOp */, nullptr /* contype */,
              CHUNKED_TRANSFER_ENCODING);
@@ -1392,14 +1404,13 @@ void RGWBulkDelete_ObjStore_SWIFT::send_response()
   bulkdelete_respond(deleter->get_num_deleted(),
                      deleter->get_num_unfound(),
                      deleter->get_failures(),
-                     s->prot_flags,
                      *s->formatter);
   rgw_flush_formatter_and_reset(s, s->formatter);
 }
 
 void RGWGetCrossDomainPolicy_ObjStore_SWIFT::send_response()
 {
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this, "application/xml");
 
@@ -1417,7 +1428,7 @@ void RGWGetCrossDomainPolicy_ObjStore_SWIFT::send_response()
 
 void RGWGetHealthCheck_ObjStore_SWIFT::send_response()
 {
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this, "application/xml");
 
@@ -1475,7 +1486,7 @@ void RGWInfo_ObjStore_SWIFT::send_response()
   if (op_ret <  0) {
     op_ret = STATUS_NO_CONTENT;
   }
-  set_req_state_err(s, op_ret);
+  s->set_req_state_err(op_ret);
   dump_errno(s);
   end_header(s, this);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -1679,7 +1690,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_redirect_op()
     }
 
     void send_response() override {
-      set_req_state_err(s, op_ret);
+      s->set_req_state_err(op_ret);
       dump_errno(s);
       dump_content_length(s, 0);
       dump_redirect(s, location);
@@ -1724,7 +1735,7 @@ RGWOp* RGWSwiftWebsiteHandler::get_ws_listing_op()
 
     void send_response() override {
       /* Generate the header now. */
-      set_req_state_err(s, op_ret);
+      s->set_req_state_err(op_ret);
       dump_errno(s);
       dump_container_metadata(s, bucket, bucket_quota,
                               s->bucket_info.website_conf);
@@ -2229,6 +2240,8 @@ int RGWHandler_REST_SWIFT::init_from_header(struct req_state* const s,
   string req;
   string first;
 
+  assert(!s->err);
+  s->err = new swift_err;
   s->prot_flags |= RGW_REST_SWIFT;
 
   char reqbuf[frontend_prefix.length() + s->decoded_uri.length() + 1];
