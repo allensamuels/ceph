@@ -2476,7 +2476,7 @@ TRACEPOINT_EVENT(librados, rados_aio_watch2_enter,
         ctf_integer_hex(rados_completion_t, completion, completion)
         ctf_integer_hex(uint64_t, phandle, phandle)
         ctf_integer_hex(rados_watchcb2_t, callback, callback)
-        ctf_inteter(uint32_t, timeout, timeout)
+        ctf_integer(uint32_t, timeout, timeout)
         ctf_integer_hex(void*, arg, arg)
     )
 )
