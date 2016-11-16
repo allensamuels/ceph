@@ -161,7 +161,7 @@ extern bool debug_mode;
 extern void set_debug_mode(bool d);
 
 // --------------------------------------------------------------
-struct pool_allocator_base_t;
+
 class pool_t;
 
 // we shard pool stats across many shard_t's to reduce the amount
@@ -175,9 +175,12 @@ enum {
 
 // align shard to a cacheline
 struct shard_t {
-  std::atomic<size_t> bytes = {0};
-  std::atomic<size_t> items = {0};
-  char __padding[128 - sizeof(std::atomic<size_t>)*2];
+  std::atomic<ssize_t> bytes = {0};       // Number of bytes currently malloc'ed
+  std::atomic<ssize_t> items = {0};       // Number of client objects currently malloc'ed
+  std::atomic<ssize_t> free_items = {0};  // Number of bytes malloc'ed but not in use by client (i.e., free in a slab)
+  std::atomic<ssize_t> free_bytes = {0};  // Number of client objects      not in use by client (i.e., free in a slab)
+  std::atomic<ssize_t> slabs = {0};       // Number of slabs currently allocated
+  char __padding[128 - sizeof(std::atomic<ssize_t>)*5];
 } __attribute__ ((aligned (128)));
 
 static_assert(sizeof(shard_t) == 128, "shard_t should be cacheline-sized");
@@ -185,9 +188,19 @@ static_assert(sizeof(shard_t) == 128, "shard_t should be cacheline-sized");
 struct stats_t {
   ssize_t items = 0;
   ssize_t bytes = 0;
+  ssize_t free_bytes = 0;
+  ssize_t free_items = 0;
+  ssize_t slabs = 0;
+  ssize_t inuse_bytes = 0;
+  ssize_t inuse_items = 0;
   void dump(ceph::Formatter *f) const {
     f->dump_int("items", items);
     f->dump_int("bytes", bytes);
+    f->dump_int("free_bytes", free_bytes);
+    f->dump_int("free_items", free_items);
+    f->dump_int("slabs", slabs);
+    f->dump_int("inuse_bytes", inuse_bytes);
+    f->dump_int("inuse_items", inuse_items);
   }
 };
 
@@ -198,6 +211,7 @@ struct type_t {
   const char *type_name;
   size_t item_size;
   std::atomic<ssize_t> items = {0};  // signed
+  std::atomic<ssize_t> free_items = {0};
 };
 
 struct type_info_hash {
@@ -212,12 +226,20 @@ class pool_t {
   mutable std::mutex lock;  // only used for types list
   std::unordered_map<const char *, type_t> type_map;
 
+  size_t sumup(std::atomic<ssize_t> shard_t::*pm) const;
+  size_t sumupdiff(std::atomic<ssize_t> shard_t::*pl, std::atomic<ssize_t> shard_t::*pr) const;
+
 public:
   //
   // How much this pool consumes. O(<num_shards>)
   //
   size_t allocated_bytes() const;
   size_t allocated_items() const;
+  size_t free_items() const;
+  size_t free_bytes() const;
+  size_t inuse_bytes() const;
+  size_t inuse_items() const;
+  size_t slabs() const;
 
   shard_t* pick_a_shard() {
     // Dirt cheap, see:
@@ -357,6 +379,113 @@ public:
 
   bool operator==(const pool_allocator&) const { return true; }
   bool operator!=(const pool_allocator&) const { return false; }
+
+};
+//
+// An specialized sorta-allocator for slabs, sorta-belongs in slab_containers.h,
+// I put it here because it's all about the mempool stats
+//
+template<pool_index_t pool_ix, typename T>
+class pool_slab_allocator {
+
+  pool_t *pool;
+  type_t *type = nullptr;
+
+  void init(bool force_register) {
+    pool = &get_pool(pool_ix);
+    if (debug_mode || force_register) {
+      type = pool->get_type(typeid(T), sizeof(T));
+    }
+  }
+
+
+public:
+  typedef T value_type;
+  typedef value_type *pointer;
+  typedef const value_type * const_pointer;
+  typedef value_type& reference;
+  typedef const value_type& const_reference;
+  typedef std::size_t size_type;
+  typedef std::ptrdiff_t difference_type;
+
+  pool_slab_allocator(bool force_register=false) {
+    init(force_register);
+  }
+
+  void* slab_new(size_t extra, size_t sizeof_T, size_t n, bool alloc, bool initial_allocated) {
+    size_t total = sizeof_T * n;
+    shard_t *shard = pool->pick_a_shard();
+    shard->bytes += total + extra;
+    shard->items += n;
+    if (initial_allocated) {
+      shard->free_bytes += total;
+      shard->free_items += n;
+    }
+    shard->slabs ++;
+    if (debug_mode) {
+      type->items += n;
+      type->free_items += n;
+    }
+    return alloc ? reinterpret_cast<void *>(new char[total + extra]) : nullptr;
+  }
+
+  void slab_delete(void* p, size_t extra, size_t sizeof_T, size_t n) {
+    size_t total = sizeof_T * n;
+    shard_t *shard = pool->pick_a_shard();
+    shard->bytes -= total + extra;
+    shard->items -= n;
+    shard->free_items -= n;
+    shard->free_bytes -= total;
+    shard->slabs --;
+    if (type) {
+      type->items -= n;
+      type->free_items -= n;
+    }
+    if (p) {
+      delete[] reinterpret_cast<char*>(p);
+    }
+  }
+
+  void slab_item_allocate(size_t sizeof_T) {
+    shard_t *shard = pool->pick_a_shard();
+    shard->free_bytes -= sizeof_T;
+    shard->free_items -= 1;
+    if (debug_mode) {
+      type->items -= 1;
+      type->free_items -= 1;
+    }
+  }
+
+  void slab_item_free(size_t sizeof_T) {
+    shard_t *shard = pool->pick_a_shard();
+    shard->free_bytes += sizeof_T;
+    shard->free_items += 1;
+    if (debug_mode) {
+      type->items += 1;
+      type->free_items += 1;
+    }
+  }
+
+  void destroy(T* p) {
+    p->~T();
+  }
+
+  template<class U>
+  void destroy(U *p) {
+    p->~U();
+  }
+
+  void construct(T* p, const T& val) {
+    ::new ((void *)p) T(val);
+  }
+
+  template<class U, class... Args> void construct(U* p,Args&&... args) {
+    ::new((void *)p) U(std::forward<Args>(args)...);
+  }
+
+  bool operator==(const pool_slab_allocator&) const { return true; }
+  bool operator!=(const pool_slab_allocator&) const { return false; }
+
 };
 
 
