@@ -225,6 +225,10 @@ TEST(test_slab_containers, documentation_test) {
   EXPECT_EQ(3u,mempool::unittest_1::inuse_items());
 }
 
+TEST(test_slab_containers, string_test) {
+   mempool::unittest_1::slab_string<100> s;
+}
+
 int main(int argc, char **argv)
 {
   vector<const char*> args;

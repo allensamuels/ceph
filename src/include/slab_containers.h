@@ -595,14 +595,77 @@ public:
 
    void selfCheck() {
    }
+};
+
+//
+// string. We rely on having an initial "reserve" call that ensures we wire-in the in-stack memory allocations
+//
+template<pool_index_t pool_ix,size_t stackCount>
+   class slab_string : 
+      public std::basic_string<char,
+			       std::char_traits<char>,
+			       slab_vector_allocator<pool_ix,char,stackCount> > {
+   typedef std::basic_string<char,
+			     std::char_traits<char>,
+                             slab_vector_allocator<pool_ix,char,stackCount>> string_type;
+public:
+
+   slab_string() {
+      this->reserve(stackCount);
+   }
+
+   slab_string(size_t initSize,const char& val = char()) {
+      this->reserve(std::max(initSize,stackCount));
+      for (size_t i = 0; i < initSize; ++i) this->push_back(val);
+   }
+
+   slab_string(const slab_string& rhs) {
+      this->reserve(stackCount);
+      *this = rhs;
+   }
+
+   slab_string& operator=(const slab_string& rhs) {
+      this->reserve(rhs.size());
+      this->clear();
+      for (auto& i : rhs) {
+         this->push_back(i);
+      }
+      return *this;
+   }
+   //
+   // sadly, this previously O(1) operation now becomes O(N) for small N :)
+   //
+   void swap(slab_string& rhs) {
+      //
+      // Lots of ways to optimize this, but we'll just do something simple....
+      //
+      // Use reserve to force the underlying code to malloc.
+      //
+      this->reserve(stackCount + 1);
+      rhs.reserve(stackCount + 1);
+      this->string_type::swap(rhs);
+   }
+   
 
 private:
+   //
+   // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
+   // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
+   // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
+   // we do have a check for this :)
+   //
+   // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
+   // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
+   // additional members.
+   // But that doesn't matter for this hack...
+   //
+   typedef slab_vector_allocator<pool_ix,char,stackCount> my_alloc_type;
+   my_alloc_type * get_my_actual_allocator() {
+      my_alloc_type *alloc = reinterpret_cast<my_alloc_type *>(this);
+      alloc->selfCheck();
+      return alloc;
+   }
 
-   // Can't copy or assign this guy
-   slab_vector_allocator(slab_vector_allocator&) = delete;
-   slab_vector_allocator(slab_vector_allocator&&) = delete;
-   void operator=(const slab_vector_allocator&) = delete;
-   void operator=(const slab_vector_allocator&&) = delete;
 };
 
 //
@@ -670,7 +733,6 @@ private:
    }
 
 };
-
 }; // namespace
 
 //
@@ -681,7 +743,7 @@ private:
 
 enum { _desired_slab_size = 256 }; // approximate preferred allocation size
 
-#define P(x)								\
+#define P(x)     							\
   namespace x {								\
     inline constexpr size_t defaultSlabSize(size_t nodeSize) {          \
       return (_desired_slab_size / nodeSize) ?                          \
@@ -716,13 +778,17 @@ enum { _desired_slab_size = 256 }; // approximate preferred allocation size
                                                                         \
     template<typename v,size_t stackSize>                               \
     using slab_vector = mempool::slab_vector<id,v,stackSize>;	        \
+                                                                        \
+    template<size_t stackSize>                                          \
+    using slab_string = mempool::slab_string<id,stackSize>;	        \
+                                                                        \
   };
-
 
 namespace mempool {
 DEFINE_MEMORY_POOLS_HELPER(P)
 };
 
 #undef P
+
 #endif // _slab_CONTAINERS_H
 

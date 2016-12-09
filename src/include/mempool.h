@@ -221,7 +221,8 @@ namespace mempool {
   f(bluestore_meta_onode)	      \
   f(bluestore_meta_other)	      \
   f(bluestore_alloc)		      \
-  f(bluefs)
+  f(bluefs)                           \
+  f(slab)
 
 // give them integer ids
 #define P(x) mempool_##x,
