@@ -20,6 +20,7 @@
 #include "common/ceph_argparse.h"
 #include "global/global_context.h"
 #include "gtest/gtest.h"
+#include "include/mempool.h"
 #include "include/slab_containers.h"
 
 template<typename A, typename B> void eq_elements(const A& a, const B& b) {
@@ -70,6 +71,7 @@ TEST(test_slab_containers, vector_context) {
       EXPECT_EQ(0u,mempool::unittest_1::free_bytes());
       EXPECT_EQ(0u,mempool::unittest_1::free_items());
       EXPECT_EQ(0u,mempool::unittest_1::containers());
+      EXPECT_EQ(0u,mempool::unittest_1::slabs());
       vector<int> a;
       mempool::unittest_1::slab_vector<int,4> b,c;
       EXPECT_EQ(2u,mempool::unittest_1::containers());
@@ -226,7 +228,19 @@ TEST(test_slab_containers, documentation_test) {
 }
 
 TEST(test_slab_containers, string_test) {
-   mempool::unittest_1::slab_string<100> s;
+  EXPECT_EQ(0u,mempool::unittest_1::inuse_items());
+  EXPECT_EQ(0u,mempool::unittest_1::containers());
+  mempool::unittest_1::slab_string<100> s;
+  EXPECT_EQ(101u,mempool::unittest_1::inuse_items());   // +1 for trailing null :)
+  EXPECT_EQ(1u,mempool::unittest_1::slabs());
+
+  s.reserve(100);
+  EXPECT_EQ(101u,mempool::unittest_1::inuse_items());
+  EXPECT_EQ(1u,mempool::unittest_1::slabs());
+  s.reserve(1000);
+  EXPECT_EQ(1001u + 101u,mempool::unittest_1::inuse_items());  // +1 because of trailing null
+  EXPECT_EQ(2u,mempool::unittest_1::slabs());
+
 }
 
 int main(int argc, char **argv)
@@ -234,8 +248,12 @@ int main(int argc, char **argv)
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
 
-  global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
+  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+			 CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
+
+  // enable debug mode for the tests
+  mempool::set_debug_mode(true);
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
