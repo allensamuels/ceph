@@ -40,7 +40,7 @@ modes.
 The DISADVANTAGE of slab containers is that you malloc/free entire slabs. Thus slab
 containers always consume more memory than their STL equivalents. The amount of extra
 memory consumed is dependent on the access pattern (and container type). The worst-case
-memory expansion is 'slabSize-1' times an STL container (approximately). However it's
+memory expansion is 'slabSize-1' times an STL container node (approximately). However it's
 likely to be very hard to create a worst-case memory pattern (unless you're trying ;-).
 This also leads toward keeping the slabSizes modest -- unless you have special knowledge
 of the access pattern OR the container itself is expected to be ephemeral.
@@ -61,13 +61,13 @@ malloc call -- its part of the container itself). The size of this slab is set t
 the template parameter 'stackSize' which must be specified on every declaration (no default).
 Thus the first 'stackSize' items in this slab container result in no malloc/free invokation
 at the expense of burning that memory whether it's used or not. This is ideal for
-continers that are normally one or two nodes but have the ability to grow on that rare
+containers that are normally one or two nodes but have the ability to grow on that rare
 occasion when it's needed.
 
 There are two ways to create more slabs: Normal usage or "reserve".
 In the normal usage case, when no more free nodes are available, a slab is allocated
 using the slabSize template parameter, which has a default value intended to try to
-round up all allocations to something like 256 Bytes.
+round up all allocations to something like 256 Bytes. see defaultSlabSize.
 
 slab containers generally have a "reserve" function that emulates the vector::reserve
 function in that it guarantees space is available for that many nodes. Reserve always
@@ -80,7 +80,7 @@ STATISTICS
 
 Normal mempools assume that all of the memory associated with a mempool is "allocated",
 but slab_containers introduce another interesting state known as "free". Bytes and items
-are in the "free" state when they are part of slab but not currently being used by
+are in the "free" state when they are part of a slab but not currently being used by
 the client container. Thus 100% of a slab is considered "allocated" regardless of
 whether any of the contained items are being used by the client container. Hence
 there are several new per-pool statistics:
@@ -88,7 +88,7 @@ there are several new per-pool statistics:
 slabs          number of slabs in system (regardless of size)
 free_items     number of items in slabs not being used by client container
 free_bytes     number of bytes in slabs not begin used by client container
-inuse_items    number of items in use (generally same as slab_xxxx.size())
+inuse_items    number of items in use
 inuse_bytes    number of bytes in use
 
 Note, since each slab container has within itself one slab, that slab is added to the
@@ -352,12 +352,14 @@ private:
    // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
    // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
    // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
-   // we do have a check for this :)
+   // we do have a check for this :). 
+   // This is done to take advantage of the empty base optimization http://en.cppreference.com/w/cpp/language/ebo
    //
    // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
    // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
-   // additional members.
-   // But that doesn't matter for this hack...
+   // additional members).
+   // But that doesn't matter for this hack, but it cascades through the allocator code. This is why a number
+   // of the functions use a saved value for sizeof(T), rather than the apparent compile-time constant.
    //
    typedef slab_allocator<pool_ix,std::pair<key,value>,stackCount,heapCount> my_alloc_type;
    my_alloc_type * get_my_actual_allocator() {
@@ -385,17 +387,6 @@ private:
    // Disallowed operations
    //
    using map_type::swap;
-   //
-   // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
-   // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
-   // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
-   // we do have a check for this :)
-   //
-   // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
-   // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
-   // additional members.
-   // But that doesn't matter for this hack...
-   //
    typedef slab_allocator<pool_ix,std::pair<key,value>,stackCount,heapCount> my_alloc_type;
    my_alloc_type * get_my_actual_allocator() {
       my_alloc_type *alloc = reinterpret_cast<my_alloc_type *>(this);
@@ -421,17 +412,6 @@ private:
    // Disallowed operations
    //
    using set_type::swap;
-   //
-   // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
-   // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
-   // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
-   // we do have a check for this :)
-   //
-   // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
-   // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
-   // additional members.
-   // But that doesn't matter for this hack...
-   //
    typedef slab_allocator<pool_ix,key,stackCount,heapCount> my_alloc_type;
    my_alloc_type * get_my_actual_allocator() {
       my_alloc_type *alloc = reinterpret_cast<my_alloc_type *>(this);
@@ -457,17 +437,6 @@ private:
    // Disallowed operations
    //
    using set_type::swap;
-   //
-   // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
-   // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
-   // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
-   // we do have a check for this :)
-   //
-   // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
-   // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
-   // additional members.
-   // But that doesn't matter for this hack...
-   //
    typedef slab_allocator<pool_ix,key,stackCount,heapCount> my_alloc_type;
    my_alloc_type * get_my_actual_allocator() {
       my_alloc_type *alloc = reinterpret_cast<my_alloc_type *>(this);
@@ -538,19 +507,6 @@ private:
          this->push_back(e);
       }
    }
-   //
-   // Disallowed operations
-   //
-   // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
-   // We need the actual underlying object. This terrible hack accomplishes that because the STL library on
-   // all of the platforms we care about actually instantiate the allocator right at the start of the object :)
-   // we do have a cheap run-time check for this, in case you're platform doesn't match the same layout :)
-   //
-   // It's also the case that the instantiation type of the underlying allocator won't match the type of the allocator
-   // That's here (that's because the container instantiates the node type itself, i.e., with container-specific
-   // additional members.
-   // But that doesn't matter for this hack...
-   //
    typedef slab_allocator<pool_ix,node,stackCount,heapCount> my_alloc_type;
    my_alloc_type * get_my_actual_allocator() {
       my_alloc_type *alloc = reinterpret_cast<my_alloc_type *>(this);
@@ -564,10 +520,11 @@ private:
 //
 //  Unlike the more sophisticated allocator above, we always have the right type, so we can save a lot of machinery
 //
-template<pool_index_t pool_ix,typename T,size_t stackSize>
+template<pool_index_t pool_ix,
+         typename T,
+         size_t stackSize>
 class slab_vector_allocator : public pool_slab_allocator<pool_ix,T> {
-   T stackSlot[stackSize]; 			// stackSlab is always allocated with the object :)
-  
+   T stackSlot[stackSize]; 			// stackSlab is always allocated with the object
 public:
    typedef slab_vector_allocator<pool_ix,T,stackSize> allocator_type;
 
@@ -580,10 +537,17 @@ public:
       this->slab_deallocate(stackSize,sizeof(T),0,false);
    }
 
+   slab_vector_allocator(const slab_vector_allocator& rhs) {
+      this->slab_allocate(stackSize,sizeof(T),0);
+   }
+
    T * allocate(size_t cnt,void *p = nullptr) {
-      if (cnt <= stackSize) return stackSlot;
+      if (cnt <= stackSize) {
+         return stackSlot;
+      }
       this->slab_allocate(cnt,sizeof(T),0);
-      return reinterpret_cast<T *>(new char[cnt * sizeof(T)]);
+      T *result = reinterpret_cast<T *>(new char[cnt * sizeof(T)]);
+      return result;
    }
 
    void deallocate(T *p, size_t s) {
@@ -591,9 +555,6 @@ public:
          this->slab_deallocate(s,sizeof(T),0,false);
          delete[] reinterpret_cast<char *>(p);
       }
-   }
-
-   void selfCheck() {
    }
 };
 
@@ -604,12 +565,12 @@ template<pool_index_t pool_ix,size_t stackCount>
    class slab_string : 
       public std::basic_string<char,
 			       std::char_traits<char>,
-			       slab_vector_allocator<pool_ix,char,stackCount> > {
+			       slab_vector_allocator<pool_ix,char,stackCount+1> > {
    typedef std::basic_string<char,
 			     std::char_traits<char>,
-                             slab_vector_allocator<pool_ix,char,stackCount>> string_type;
+                             slab_vector_allocator<pool_ix,char,stackCount+1>> string_type;
 public:
-
+/*
    slab_string() {
       this->reserve(stackCount);
    }
@@ -623,15 +584,7 @@ public:
       this->reserve(stackCount);
       *this = rhs;
    }
-
-   slab_string& operator=(const slab_string& rhs) {
-      this->reserve(rhs.size());
-      this->clear();
-      for (auto& i : rhs) {
-         this->push_back(i);
-      }
-      return *this;
-   }
+*/
    //
    // sadly, this previously O(1) operation now becomes O(N) for small N :)
    //
@@ -639,14 +592,14 @@ public:
       //
       // Lots of ways to optimize this, but we'll just do something simple....
       //
-      // Use reserve to force the underlying code to malloc.
+      // Use reserve to force the underlying code to malloc. Then it's okay for native swap :)
       //
-      this->reserve(stackCount + 1);
-      rhs.reserve(stackCount + 1);
+      this->reserve(stackCount + 2);
+      rhs.reserve(stackCount + 2);
       this->string_type::swap(rhs);
    }
    
-
+/*
 private:
    //
    // Unfortunately, the get_allocator operation returns a COPY of the allocator, not a reference :( :( :( :(
@@ -665,7 +618,7 @@ private:
       alloc->selfCheck();
       return alloc;
    }
-
+*/
 };
 
 //
